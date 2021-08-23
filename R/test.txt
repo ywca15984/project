@@ -1,0 +1,53 @@
+library(RJDBC)
+library(DBI)
+library(ggplot2)
+library(igraph)
+library(dplyr)
+library(sendgridr)
+library(rsq)
+library(class)
+library(gmodels)
+library(scales)
+
+#dbconnection
+jdbcDriver <- JDBC(driverClass = "oracle.jdbc.OracleDriver", classPath = "C:/oraclexe/app/oracle/product/11.2.0/server/jdbc/lib/ojdbc6.jar")
+con <- dbConnect(jdbcDriver,"jdbc:oracle:thin:@localhost:1521:xe", "scott","tiger") 
+
+#call up total data and today data
+total_data_1<-dbGetQuery(con, "select * from TOTALDATA where type = 1");
+today_data<-dbGetQuery(con, "select substr(log_date,12,2) as time,temp_data from (select to_char(sysdate,'yyyy-MM-dd-hh24') as sys_date,log_date,temp_data,serial from sensor_data where to_char(sysdate,'yyyy-MM-dd')=substr(log_date,1,10) and serial = '20210101AAAABB' order by log_date asc)")
+
+#regression analysis for normal state
+total_data_1_edit <- data.frame(t(total_data_1[c(1:24)]))
+
+total_data_1_final<-cbind(data.frame(TIME=c(1:24)),TEMP = matrix(total_data_1_edit[,1],nrow=24))
+total_time <-total_data_1_final$TIME
+
+for(i in 2 : (length(total_data_1_edit))){total_data_tempt <- cbind(total_time,matrix(total_data_1_edit[,i],nrow=24));df_tempt<-(data.frame(total_data_tempt));names(df_tempt)<-names(total_data_1_final);total_data_1_final <- rbind(total_data_1_final,df_tempt)}
+
+for (i in 1 : 100){;NonLinear_tdl_1 = lm(formula = TEMP ~ poly(TIME,i), data = total_data_1_final);param_1 <- i;if(rsq(NonLinear_tdl_1)>0.95){break;}}
+
+
+#predict today error type
+temp <-dbGetQuery(con, "select * from TOTALDATA");
+
+today_data_1<-data.frame(TIME=c(00,01,02,03,04,05,06,07,08,09,10,11,12,13,14,15,16,17,18,19,20,21,22,23))
+today_data_1<-cbind(today_data_1,data.frame(DATA=c(NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA)))
+
+for(i in 1:nrow(today_data)){today_data_1[as.numeric(today_data$TIME[i])+1,2]<-today_data[i,2]}
+for(i in 1:(as.numeric(today_data$TIME[nrow(today_data)])+1)){if(is.na(today_data_1[i,2]) == 'TRUE'){today_data_1[i,2] = 0;}}
+
+
+#graph
+sample1 <- cbind(TIME =total_data_1_final$TIME[c(1:24)],DATA =round(NonLinear_tdl_1$fitted.values[c(1:24)]))
+graph_data <- cbind(today_data_1,variance= "Today")
+graph_data_2 <- cbind(data.frame(sample1),variance ="Normal State")
+graph_final <- rbind(graph_data,graph_data_2);
+
+graph_1<-ggplot(main = "plot1",data = graph_final,aes(x = TIME,y = DATA))+theme(legend.position = c(0.9,.8))+geom_line(aes(color = variance),size =1.25)+ geom_point(aes(color = variance),size =1.25)
+
+graph_2<- graph_1 +scale_x_continuous(breaks=(0:23)) + scale_y_continuous(breaks=(0:15)*10,limits = c(10, 100))
+
+if (is.na(today_data_1[24,2])=='FALSE'){attach(temp);temp1 <- today_data_1[,2];set.seed(1000);N<-nrow(temp);tr.idx<-sample(1:N,size = N*2/3,replace = FALSE);temp.train<- temp[tr.idx,-25];temp.test<- temp[-tr.idx,-25];trainLabels<-temp[tr.idx,25];testLabels<-temp[-tr.idx,25];md1<-knn(train=temp.train,cl=trainLabels,test=temp.test,k=5);md2<-knn(train=temp.train,cl=trainLabels,test=temp1,k=5);CrossTable(x=testLabels,y=md1,prop.chisq =FALSE)}else{md2<- NULL;}
+
+if(is.null(md2)=='FALSE'){if (md2 == 1){warning <- 'NORMAL'}else if(md2 == 2){warning <- 'type2'}else if(md2 == 3){warning <- 'type3'};mailid<-dbGetQuery(con, "select email from CLIINFO where serial = '20210101AAAABB'");if(warning == 'type2'){mail() %>%from("cym9727@gmail.com", "teamA") %>%to(mailid[1,1] , "yee") %>%subject("PROJECT") %>%body("type2 error can be happen") %>%send()}else if(warning == 'type3'){mail() %>%from("cym9727@gmail.com", "teamA") %>%to(mailid[1,1] , "efg") %>%subject("PROJECT") %>%body("type3 error can be happen") %>%send()}}
